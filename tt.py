@@ -57,7 +57,7 @@ def _scaled_logp_dlogp(base_logp_dlogp: LogpDlogpFunc, beta: float) -> LogpDlogp
 
     return f
 
-
+# аккуратная обработка импортов
 def _get_quadpotential_diag(ndim: int):
     if hasattr(lmc, "quadpotential") and hasattr(lmc.quadpotential, "QuadPotentialDiag"):
         return lmc.quadpotential.QuadPotentialDiag(np.ones(ndim, dtype=float))
@@ -65,7 +65,6 @@ def _get_quadpotential_diag(ndim: int):
         return lmc.QuadPotentialDiag(np.ones(ndim, dtype=float))
     raise AttributeError("Cannot find QuadPotentialDiag in littlemcmc")
 
-## УПРОСТИТЬ!
 def _extract_model_logp(stats: Dict[str, Any], *, key: str, chains: int) -> Array:
     v = np.asarray(stats[key])
     v = np.squeeze(v)  # (chains,) или scalar при chains=1
@@ -139,59 +138,69 @@ class HMCKernel:
         x1 = trace[:, 0, :].copy()
         return x1, stats
 
+
+class HMC:
+    def __init__(
+        self,
+        *,
+        logp_dlogp_func: LogpDlogpFunc,
+        ndim: int,
+        chains: int,
+        params: HMCParams,
+        potential: Optional[Any] = None,
+        rng: Optional[np.random.Generator] = None,
+    ):
+        self.ndim = int(ndim)
+        self.chains = int(chains)
+        self.logp_dlogp_func = logp_dlogp_func
+        self.rng = np.random.default_rng() if rng is None else rng
+
+        if potential is None:
+            potential = _get_quadpotential_diag(self.ndim)
+        self.potential = potential
+        self.params = params
+
+        self.step = lmc.hmc.HamiltonianMC(
+            logp_dlogp_func=self.logp_dlogp_func,
+            model_ndim=self.ndim,
+            potential=self.potential,
+            target_accept=float(params.target_accept),
+            adapt_step_size=bool(params.adapt_step_size),
+            step_scale=float(params.step_scale),
+            path_length=float(params.path_length),
+            max_steps=int(params.max_steps),
+        )
+
     def draw(
         self,
         starts: Union[Array, Sequence[Array]],
         *,
-        draws: int = 100,
-        tune: int = 100,
+        draws: int,
+        tune: int = 0,
         cores: int = 1,
         progressbar: bool = True,
-        potential: Optional[Any] = None,
-        settings: Optional[HMCParams] = None,
+        discard_tuned_samples: bool = False,
     ) -> Tuple[Array, Dict[str, Any]]:
-        if draws <= 0:
-            raise ValueError("draws must be positive")
-        if tune < 0:
-            raise ValueError("tune must be >= 0")
-
-        x0 = _ensure_starts_array(starts, chains=self.chains, ndim=self.ndim)
-
-        if potential is None and settings is None:
-            step = self.step
-        else:
-            if potential is None:
-                potential = _get_quadpotential_diag(self.ndim)
-            if settings is None:
-                settings = HMCParams()
-
-            step = lmc.hmc.HamiltonianMC(
-                logp_dlogp_func=self.logp_dlogp_func,
-                model_ndim=self.ndim,
-                potential=potential,
-                target_accept=float(settings.target_accept),
-                adapt_step_size=bool(settings.adapt_step_size),
-                step_scale=float(settings.step_scale),
-                path_length=float(settings.path_length),
-                max_steps=int(settings.max_steps),
-            )
-
+        x0 = _ensure_starts_array(starts, chains=self.chains, ndim=self.ndim)  # [file:63]
         trace, stats = lmc.sample(
             logp_dlogp_func=self.logp_dlogp_func,
             model_ndim=self.ndim,
-            step=step,
+            step=self.step,
             draws=int(draws),
             tune=int(tune),
             chains=self.chains,
             cores=int(cores),
-            start=_to_lmc_start_list(x0),
-            random_seed=[int(self.rng.integers(0, 2**31 - 1)) for _ in range(self.chains)],
-            discard_tuned_samples=False,
+            start=_to_lmc_start_list(x0),  # [file:63]
+            random_seed=[int(self.rng.integers(0, 2**31 - 1)) for _ in range(self.chains)],  # [file:63]
+            discard_tuned_samples=bool(discard_tuned_samples),
             progressbar=bool(progressbar),
         )
+        return np.asarray(trace, dtype=float), stats
 
-        trace = np.asarray(trace, dtype=float)  # (chains, tune+draws, ndim)
-        return trace, stats
+    @staticmethod
+    def last_points(trace: Array) -> Array:
+        # trace shape: (chains, draws_or_tune+draws, ndim)
+        return np.asarray(trace[:, -1, :], dtype=float, copy=True)
 
 
 class TemperedTransitions:
@@ -203,14 +212,14 @@ class TemperedTransitions:
         betas: Sequence[float],
         ndim: int,
         chains: int,
-        tt_settings: HMCParams = HMCParams(),
+        params: HMCParams = HMCParams(),
         potential: Optional[Any] = None,
         model_logp_key: str = "model_logp",
     ):
         self.base_logp_dlogp = base_logp_dlogp
         self.ndim = int(ndim)
         self.chains = int(chains)
-        self.tt_settings = tt_settings
+        self.params = params
         self.potential = potential
         self.model_logp_key = str(model_logp_key)
 
@@ -232,7 +241,7 @@ class TemperedTransitions:
                     logp_dlogp_func=lp,
                     ndim=self.ndim,
                     chains=self.chains,
-                    params=self.tt_settings,
+                    params=self.params,
                     potential=self.potential,
                 )
             )
@@ -304,7 +313,13 @@ class TemperedTransitions:
         return x_next, info
 
 
+
+################################################################################################
+################################################################################################
+
+
 if __name__ == "__main__":
+
     import energy
     import collector
 
@@ -313,15 +328,22 @@ if __name__ == "__main__":
         grid = [round(q**k, 4) for k in range(n)]
         return grid
     
-    temped_cycles = 20
-    hmc_draws = 50
-    hmc_tunes = 50
+    sampling_func = energy.logp_dlogp_vm_mixture_torus
+    temped_cycles = 10
+    hmc_draws_nstep = 300
+    hmc_tunes_nstep = 0
+    hmc_train_nsteps = 3000
+    ndim = 2
     chains = 4
-    starts = [np.array([0.0], dtype=float) for _ in range(chains)]
-    potential = lmc.quadpotential.QuadPotentialDiagAdapt(1, 
-                                                         initial_mean=np.array([np.mean(starts)]),
-                                                         initial_diag=None)
+    starts = [np.array([0.0 for _ in range(ndim)], dtype=float) for __ in range(chains)]
 
+
+
+    print("======== HMC SETTINGS ESTIMATION ========")
+
+    init_potential = lmc.quadpotential.QuadPotentialDiagAdapt(ndim, 
+                                                         initial_mean=np.mean(np.array(starts), axis=0),
+                                                         initial_diag=None)
 
     hmc_settings = HMCParams(step_scale=0.25,
                              path_length=2.0,
@@ -330,54 +352,79 @@ if __name__ == "__main__":
                              adapt_step_size=True
                              )
     
-    tt_settings = HMCParams(step_scale=0.4,
-                         path_length=4.0,
-                         max_steps=8,
-                         target_accept=0.1,
-                         adapt_step_size=False)
-
-
-    temp_transition = TemperedTransitions(
-        base_logp_dlogp=energy.logp_dlogp_func,
-        betas=build_grid(0.03, 15),
-        ndim=1,
+    hmc_tune = HMC(
+        logp_dlogp_func=sampling_func,
+        ndim=ndim,
         chains=chains,
-        tt_settings=tt_settings,
+        params=hmc_settings,
+        potential=init_potential
     )
-
-    hmc = HMCKernel(
-        logp_dlogp_func=energy.logp_dlogp_func,
-        ndim=1,
-        chains=chains,
-        potential=None
-    )
-
-    ################################################################################################
-    ################################################################################################
+    
+    trace_train, stats_train = hmc_tune.draw(starts=starts, draws=0, tune=hmc_train_nsteps)
+    pot = hmc_tune.step.potential
+    mass_diag_estim = np.asarray(pot._var, dtype=float).copy()
+    step_size_estim = hmc_tune.step.step_size
 
 
     print("======== STRARTING TEMPERED TRANSITION HMC ========")
+
+    potential = lmc.quadpotential.QuadPotentialDiag(mass_diag_estim)
+    
+
+    tt_settings = HMCParams(step_scale=step_size_estim,
+                            path_length=4.0,
+                            max_steps=8,
+                            target_accept=0.65,
+                            adapt_step_size=False
+                            )
+    
+    hmc_settings = HMCParams(step_scale=step_size_estim,
+                             path_length=2.0,
+                             max_steps=16,
+                             target_accept=0.8,
+                             adapt_step_size=False
+                             )
+    
+    hmc = HMC(
+        logp_dlogp_func=sampling_func,
+        ndim=ndim,
+        chains=chains,
+        params=hmc_settings,
+        potential=potential
+    )
+
+
+    temp_transition = TemperedTransitions(
+        base_logp_dlogp=sampling_func,
+        betas=build_grid(0.01, 15),
+        ndim=ndim,
+        chains=chains,
+        params=tt_settings,
+        potential=potential
+    )
 
     TRACES = []
     STATS = []
     INFO = []
 
+    
     for k in range(temped_cycles):
 
-        trace, stat = hmc.draw(starts=starts, draws=hmc_draws, tune=hmc_tunes, potential=potential, settings=hmc_settings)
+        trace, stat = hmc.draw(starts=starts, draws=hmc_draws_nstep, tune=hmc_tunes_nstep)
         tt_starts = trace[:, -1, :]
 
-        print(f"----- {k+1} CYCLE OF TEMPERING -----")
-        x_next, info = temp_transition.step(tt_starts, return_list=False)
+        # print(f"----- {k+1} CYCLE OF TEMPERING -----")
+        # x_next, info = temp_transition.step(tt_starts, return_list=False)
 
+        x_next = tt_starts
         print(x_next)
-        print(info["accept"])
+        # print(info["accept"])
 
         starts = x_next.copy()
 
         TRACES.append(trace)
         STATS.append(stat)
-        INFO.append(info)
+        # INFO.append(info)
 
     
     TRACE_ALL = collector.concat_traces(TRACES)
@@ -387,11 +434,21 @@ if __name__ == "__main__":
         "tempered_hmc_run.npz",
         trace=TRACE_ALL,
         stats=STATS_ALL,
-        draws=temped_cycles * hmc_draws,
-        tune=temped_cycles * hmc_tunes,
+        draws=temped_cycles * hmc_draws_nstep,
+        tune=temped_cycles * hmc_tunes_nstep,
         discard_tuned_samples=False,
-        meta={"temped_cycles": temped_cycles, "betas": build_grid(0.05, 10)},
+        meta={"temped_cycles": temped_cycles, "betas": build_grid(0.01, 15)},
     )
+
+    # collector.save_to_npz(
+    #     "train.npz",
+    #     trace=[trace_train],
+    #     stats=[stats_train],
+    #     draws=hmc_train_nsteps,
+    #     tune=0,
+    #     discard_tuned_samples=False,
+    #     meta={"temped_cycles": temped_cycles, "betas": build_grid(0.05, 10)},
+    # )
 
 
 
