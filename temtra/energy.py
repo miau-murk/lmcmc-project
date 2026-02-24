@@ -3,7 +3,6 @@ import scipy
 import scipy.stats
 from scipy.special import logsumexp
 
-
 ################################################################################
 # TEST FUNCTION 1
 # 2D UNIMODUL NORMAL DISTRIBUTION
@@ -56,7 +55,7 @@ def dlogp_func(x, loc1=-2.0, scale1=1.0, loc2=2.0, scale2=1.0, w=0.5, eps=1e-12)
     dlogp2 = -(x - loc2) / (scale2 ** 2)
     return r1 * dlogp1 + r2 * dlogp2
 
-def logp_dlogp_func(x, loc1=0.0, scale1=1, loc2=0.0, scale2=1, w=0.5, eps=1e-12):
+def logp_dlogp_func(x, loc1=-2.0, scale1=1, loc2=2.0, scale2=1, w=0.75, eps=1e-12):
     return (logp_func(x, loc1, scale1, loc2, scale2, w, eps),
             dlogp_func(x, loc1, scale1, loc2, scale2, w, eps))
 
@@ -195,3 +194,8 @@ def dlogp_vm_mixture_torus(x, mus=None, kappas=None, rhos=None, logw=None, wrap_
 
 def logp_dlogp_vm_mixture_torus(x, *args, **kwargs):
     return logp_vm_mixture_torus(x, *args, **kwargs), dlogp_vm_mixture_torus(x, *args, **kwargs)
+
+
+
+
+
