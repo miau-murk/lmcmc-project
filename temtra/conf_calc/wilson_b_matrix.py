@@ -548,5 +548,40 @@ def get_current_derivative(mol : Chem.rdchem.Mol,
         if cur == cur_coord:
             return int_grad[idx]
 
+
+ANGSTROM_TO_BOHR = 1.0 / 0.529177210903  # 1 Å = 1.889726... bohr
+
+def _coords_flat_angstrom(mol):
+    conf = mol.GetConformer()
+    n = mol.GetNumAtoms()
+    x = np.zeros((n, 3), dtype=float)
+    for i in range(n):
+        p = conf.GetAtomPosition(i)
+        x[i, :] = (p.x, p.y, p.z)
+    return x.reshape(-1)
+
+import copy
+def get_dihedral_derivative_rdkit(mol, cart_grads, idxs4, delta=1e-6):
+    """
+    Возвращает dE/dphi (phi в радианах), согласованное с RDKit SetDihedralRad.
+    cart_grads: (N,3) как вы парсите из файла gradient. [file:1]
+    idxs4: [i,j,k,l] в том же порядке, что вы крутите в SetDihedralRad. [file:1][file:19]
+    """
+    # dx/dphi через центральную разность координат при +delta/-delta
+    mol_p = copy.deepcopy(mol)
+    mol_m = copy.deepcopy(mol)
+
+    phi0 = rdMolTransforms.GetDihedralRad(mol.GetConformer(), *idxs4)
+    rdMolTransforms.SetDihedralRad(mol_p.GetConformer(), *idxs4, phi0 + delta)
+    rdMolTransforms.SetDihedralRad(mol_m.GetConformer(), *idxs4, phi0 - delta)
+
+    x_p = _coords_flat_angstrom(mol_p)
+    x_m = _coords_flat_angstrom(mol_m)
+    dx_dphi_bohr = (x_p - x_m) * (ANGSTROM_TO_BOHR / (2.0 * delta))
+
+    g = np.asarray(cart_grads, dtype=float).reshape(-1)  # dE/dx
+    return float(np.dot(g, dx_dphi_bohr))
+
+
 #print(get_current_derivative(Chem.MolFromMolFile("test.mol", removeHs=False), grads, Dihedral(5, 4, 6, 7)))
 

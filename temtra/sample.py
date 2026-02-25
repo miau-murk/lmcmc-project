@@ -21,8 +21,6 @@ calculator = ConfCalc(
     rotable_dihedral_idxs=rotatable_dih_idx,
 )
 
-
-
 def logp_dlogp_xtb(phi, E0=-13.652247): # дописать!
     phi = np.asarray(phi, dtype=float)
     
@@ -51,9 +49,10 @@ def build_grid(beta_min, n):
     return grid
 
 if __name__ == "__main__":
+
     
-    sampling_func = energy.logp_dlogp_vm_mixture_torus
-    temped_cycles = 0
+    sampling_func = logp_dlogp_xtb
+    temped_cycles = 1
     hmc_draws_nstep = 10
     hmc_tunes_nstep = 0
     hmc_train_nsteps = 10
@@ -76,20 +75,17 @@ if __name__ == "__main__":
                              )
     
     hmc_tune = HMC(
-        logp_dlogp_func=logp_dlogp_xtb,
+        logp_dlogp_func=sampling_func,
         ndim=ndim,
         chains=chains,
         params=hmc_settings,
         potential=init_potential
     )
     
-    trace_train, stats_train = hmc_tune.draw(starts=starts, draws=0, tune=hmc_train_nsteps)
+    trace_train, stats_train = hmc_tune.draw(starts=starts, draws=1000, tune=500)
     pot = hmc_tune.step.potential
     mass_diag_estim = np.asarray(pot._var, dtype=float).copy()
     step_size_estim = hmc_tune.step.step_size
-
-    print(trace_train)
-    print(stats_train)
 
     print("======== STRARTING TEMPERED TRANSITION HMC ========")
 
@@ -132,7 +128,6 @@ if __name__ == "__main__":
     STATS = []
     INFO = []
 
-    
     for k in range(temped_cycles):
 
         trace, stat = hmc.draw(starts=starts, draws=hmc_draws_nstep, tune=hmc_tunes_nstep)

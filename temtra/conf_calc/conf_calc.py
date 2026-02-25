@@ -7,7 +7,8 @@ from rdkit.Chem import rdMolTransforms
 
 from .wilson_b_matrix import (
     Dihedral,
-    get_current_derivative
+    get_current_derivative,
+    get_dihedral_derivative_rdkit
 )
 
 import subprocess
@@ -221,11 +222,11 @@ class ConfCalc:
         grads = []
         with open(grads_filename, 'r') as file:
             grads = [line[:-1] for line in file][(2 + num_of_atoms):-1]
-        return np.array(list(map(lambda s: list(map(float, s.split())), grads)))            
+        return np.array([ [float(t.replace('D','E')) for t in s.split()] for s in grads ])           
 
     def __move_xtb_files_to_folder(self, target_folder="xtb_dump"):
         os.makedirs(target_folder, exist_ok=True)
-        file_patterns = ["*.out", "*.wfn", "*.log", "*.tmp", "*gradient", 
+        file_patterns = ["*.wfn", "*.log", "*.tmp", "*gradient", 
                         "*.inp", "*.xyz", "*.engrad", "*energy", "*wbo", 
                         "*xtbrestart", "*xtbtopo*", "*charges"]
         
@@ -259,9 +260,7 @@ class ConfCalc:
             for rotable_idx in self.rotable_dihedral_idxs:
                 irc_grad.append((
                         rotable_idx, 
-                        get_current_derivative(mol,
-                                               cart_grads.flatten(),
-                                               Dihedral(*rotable_idx))    
+                        get_dihedral_derivative_rdkit(mol, cart_grads, rotable_idx, delta=1e-5)    
                 ))
 
         self.__move_xtb_files_to_folder()
