@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
 
 import numpy as np
-import littlemcmc.littlemcmc as lmc
+import temtra.littlemcmc.littlemcmc as lmc
 
 Array = np.ndarray
 LogpDlogpFunc = Callable[[Array], Tuple[Any, Array]]  # logp может быть float или ndarray (мы сведём к scalar)
@@ -39,12 +39,10 @@ def _ensure_starts_array(starts: Union[Array, Sequence[Array]], *, chains: int, 
 
 
 def _to_lmc_start_list(x: Array) -> List[Array]:
-    # littlemcmc.sample ожидает list длины chains: каждый элемент shape (ndim,)
     return [np.asarray(x[i], dtype=float) for i in range(x.shape[0])]
 
 
 def _sum_logp(logp: Any) -> float:
-    # для данной реализации это не очнь обязательная функция
     return float(np.sum(np.asarray(logp)))
 
 
@@ -57,7 +55,6 @@ def _scaled_logp_dlogp(base_logp_dlogp: LogpDlogpFunc, beta: float) -> LogpDlogp
 
     return f
 
-# аккуратная обработка импортов
 def _get_quadpotential_diag(ndim: int):
     if hasattr(lmc, "quadpotential") and hasattr(lmc.quadpotential, "QuadPotentialDiag"):
         return lmc.quadpotential.QuadPotentialDiag(np.ones(ndim, dtype=float))
@@ -67,7 +64,7 @@ def _get_quadpotential_diag(ndim: int):
 
 def _extract_model_logp(stats: Dict[str, Any], *, key: str, chains: int) -> Array:
     v = np.asarray(stats[key])
-    v = np.squeeze(v)  # (chains,) или scalar при chains=1
+    v = np.squeeze(v)
     if v.ndim == 0:
         v = v.reshape(1)
     if v.ndim == 1:
@@ -311,144 +308,3 @@ class TemperedTransitions:
         if return_list:
             return _to_lmc_start_list(x_next), info
         return x_next, info
-
-
-
-################################################################################################
-################################################################################################
-
-
-if __name__ == "__main__":
-
-    import energy
-    import collector
-
-    def build_grid(beta_min, n):
-        q = (beta_min)**(1/(n-1))
-        grid = [round(q**k, 4) for k in range(n)]
-        return grid
-    
-    sampling_func = energy.logp_dlogp_vm_mixture_torus
-    temped_cycles = 10
-    hmc_draws_nstep = 300
-    hmc_tunes_nstep = 0
-    hmc_train_nsteps = 3000
-    ndim = 2
-    chains = 4
-    starts = [np.array([0.0 for _ in range(ndim)], dtype=float) for __ in range(chains)]
-
-
-
-    print("======== HMC SETTINGS ESTIMATION ========")
-
-    init_potential = lmc.quadpotential.QuadPotentialDiagAdapt(ndim, 
-                                                         initial_mean=np.mean(np.array(starts), axis=0),
-                                                         initial_diag=None)
-
-    hmc_settings = HMCParams(step_scale=0.25,
-                             path_length=2.0,
-                             max_steps=4,
-                             target_accept=0.8,
-                             adapt_step_size=True
-                             )
-    
-    hmc_tune = HMC(
-        logp_dlogp_func=sampling_func,
-        ndim=ndim,
-        chains=chains,
-        params=hmc_settings,
-        potential=init_potential
-    )
-    
-    trace_train, stats_train = hmc_tune.draw(starts=starts, draws=0, tune=hmc_train_nsteps)
-    pot = hmc_tune.step.potential
-    mass_diag_estim = np.asarray(pot._var, dtype=float).copy()
-    step_size_estim = hmc_tune.step.step_size
-
-
-    print("======== STRARTING TEMPERED TRANSITION HMC ========")
-
-    potential = lmc.quadpotential.QuadPotentialDiag(mass_diag_estim)
-    
-
-    tt_settings = HMCParams(step_scale=step_size_estim,
-                            path_length=4.0,
-                            max_steps=8,
-                            target_accept=0.65,
-                            adapt_step_size=False
-                            )
-    
-    hmc_settings = HMCParams(step_scale=step_size_estim,
-                             path_length=2.0,
-                             max_steps=16,
-                             target_accept=0.8,
-                             adapt_step_size=False
-                             )
-    
-    hmc = HMC(
-        logp_dlogp_func=sampling_func,
-        ndim=ndim,
-        chains=chains,
-        params=hmc_settings,
-        potential=potential
-    )
-
-
-    temp_transition = TemperedTransitions(
-        base_logp_dlogp=sampling_func,
-        betas=build_grid(0.01, 15),
-        ndim=ndim,
-        chains=chains,
-        params=tt_settings,
-        potential=potential
-    )
-
-    TRACES = []
-    STATS = []
-    INFO = []
-
-    
-    for k in range(temped_cycles):
-
-        trace, stat = hmc.draw(starts=starts, draws=hmc_draws_nstep, tune=hmc_tunes_nstep)
-        tt_starts = trace[:, -1, :]
-
-        # print(f"----- {k+1} CYCLE OF TEMPERING -----")
-        # x_next, info = temp_transition.step(tt_starts, return_list=False)
-
-        x_next = tt_starts
-        print(x_next)
-        # print(info["accept"])
-
-        starts = x_next.copy()
-
-        TRACES.append(trace)
-        STATS.append(stat)
-        # INFO.append(info)
-
-    
-    TRACE_ALL = collector.concat_traces(TRACES)
-    STATS_ALL = collector.concat_stats(STATS, chains=chains, total=TRACE_ALL.shape[1])
-
-    collector.save_to_npz(
-        "tempered_hmc_run.npz",
-        trace=TRACE_ALL,
-        stats=STATS_ALL,
-        draws=temped_cycles * hmc_draws_nstep,
-        tune=temped_cycles * hmc_tunes_nstep,
-        discard_tuned_samples=False,
-        meta={"temped_cycles": temped_cycles, "betas": build_grid(0.01, 15)},
-    )
-
-    # collector.save_to_npz(
-    #     "train.npz",
-    #     trace=[trace_train],
-    #     stats=[stats_train],
-    #     draws=hmc_train_nsteps,
-    #     tune=0,
-    #     discard_tuned_samples=False,
-    #     meta={"temped_cycles": temped_cycles, "betas": build_grid(0.05, 10)},
-    # )
-
-
-
